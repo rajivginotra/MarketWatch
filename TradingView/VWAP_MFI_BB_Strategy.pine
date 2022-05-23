@@ -1,0 +1,92 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © rginotra
+
+//@version=5
+strategy("GoldenCrossover", overlay=true)
+start = timestamp(2022, 5, 1)
+end = timestamp(2022, 5, 29)
+
+
+computeVWAP(src, isNewPeriod, stDevMultiplier) =>
+    var float sumSrcVol = na
+    var float sumVol = na
+    var float sumSrcSrcVol = na
+
+    sumSrcVol := isNewPeriod ? src * volume : src * volume + sumSrcVol[1]
+    sumVol := isNewPeriod ? volume : volume + sumVol[1]
+    // sumSrcSrcVol calculates the dividend of the equation that is later used to calculate the standard deviation
+    sumSrcSrcVol := isNewPeriod ? volume * math.pow(src, 2) : volume * math.pow(src, 2) + sumSrcSrcVol[1]
+
+    _vwap = sumSrcVol / sumVol
+    variance = sumSrcSrcVol / sumVol - math.pow(_vwap, 2)
+    variance := variance < 0 ? 0 : variance
+    stDev = math.sqrt(variance)
+
+    lowerBand = _vwap - stDev * stDevMultiplier
+    upperBand = _vwap + stDev * stDevMultiplier
+
+    [_vwap, lowerBand, upperBand]
+
+timeChange(period) =>
+    ta.change(time(period))
+
+var anchor = input.string(defval = "Session", title="Anchor Period",
+ options=["Session", "Week", "Month", "Quarter", "Year", "Decade", "Century", "Earnings", "Dividends", "Splits"], group="VWAP Settings")
+src = input(title = "Source", defval = hlc3, group="VWAP Settings")
+stdevMult = input(2.0, title="Bands Multiplier", group="Standard Deviation Bands Settings")
+
+new_earnings = request.earnings(syminfo.tickerid, earnings.actual, barmerge.gaps_on, barmerge.lookahead_on, ignore_invalid_symbol=true)
+new_dividends = request.dividends(syminfo.tickerid, dividends.gross, barmerge.gaps_on, barmerge.lookahead_on, ignore_invalid_symbol=true)
+new_split = request.splits(syminfo.tickerid, splits.denominator, barmerge.gaps_on, barmerge.lookahead_on, ignore_invalid_symbol=true)
+
+
+
+isNewPeriod = switch anchor
+    "Earnings" => not na(new_earnings)
+    "Dividends" => not na(new_dividends)
+    "Splits" => not na(new_split)
+    "Session" => timeChange("D")
+    "Week" => timeChange("W")
+    "Month" => timeChange("M")
+    "Quarter" => timeChange("3M")
+    "Year" => timeChange("12M")
+    "Decade" => timeChange("12M") and year % 10 == 0
+    "Century" => timeChange("12M") and year % 100 == 0
+    => false
+
+isEsdAnchor = anchor == "Earnings" or anchor == "Dividends" or anchor == "Splits"
+if na(src[1]) and not isEsdAnchor
+    isNewPeriod := true
+
+
+
+[_vwap, bottom, top] = computeVWAP(src, isNewPeriod, stdevMult)
+
+mfi = ta.mfi(close, 10)
+
+//length = input(20, minval=1)
+//src = input(close, title="Source")
+mult = 2.0
+basis = ta.sma(close, 14)
+dev = mult * ta.stdev(close, 14)
+upper = basis + dev
+lower = basis - dev
+
+linecolor = basis * 0.09 > upper - lower ? color.new(color.green,80) : color.new(color.red,80)
+
+plot(basis, color=color.new(color.black,80),linewidth=1)
+p1 = plot(upper, color=linecolor)
+p2 = plot(lower, color=linecolor)
+//fill(p1, p2, color=linecolor)
+
+if (time >= start and time <= end)
+    if (close < _vwap) and (hour(time) >= 11 and hour(time) < 15) and (mfi < mfi[1]) and close < ta.sma(close, 5) and close < open and close[1] < open[1]  and mfi < 80 and mfi > 40 and low > lower and open < basis
+         // close < ta.sma(close, 10) and ta.sma(close, 5) < ta.sma(close, 10)
+        strategy.entry("short", strategy.short, 100)
+
+
+    //Closing Price is below VMWA but has gone above 10 MA so doing short covering
+    if (close > _vwap) or (close < _vwap and (close > ta.sma(close,5) or ta.crossover(close,bottom)))
+        strategy.close("short", comment="CloseShort")
+
+
